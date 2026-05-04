@@ -225,7 +225,11 @@
       <div class="header-title">// TASKFLOW</div>
       <div class="header-date" id="headerDate"></div>
     </div>
-    <div class="header-actions"></div>
+    <div class="header-actions">
+      <button class="icon-btn" onclick="exportData()" title="バックアップ">⬆️</button>
+      <button class="icon-btn" onclick="document.getElementById('importInput').click()" title="復元">⬇️</button>
+      <input type="file" id="importInput" accept=".json" style="display:none" onchange="importData(event)" />
+    </div>
   </div>
 </div>
 
@@ -277,7 +281,8 @@
 
     <!-- フィルター -->
     <div class="filters" id="filterArea">
-      <button class="filter-pill active" onclick="setFilter('all',this)">すべて</button>
+      <button class="filter-pill active" onclick="setFilter('today',this)">今日</button>
+      <button class="filter-pill" onclick="setFilter('all',this)">すべて</button>
       <button class="filter-pill" onclick="setFilter('高',this)">優先度：高</button>
       <button class="filter-pill" onclick="setFilter('overdue',this)">期限超過</button>
       <button class="filter-pill" onclick="setFilter('仕事',this)">仕事</button>
@@ -293,17 +298,13 @@
 
 <!-- タブバー -->
 <div class="tab-bar">
-  <button class="tab-item active" onclick="switchTab('today',this)" id="tab-today">
-    <div class="tab-icon">☀️</div>
-    <div class="tab-label">今日</div>
+  <button class="tab-item active" onclick="switchTab('task',this)" id="tab-task">
+    <div class="tab-icon">📋</div>
+    <div class="tab-label">タスク</div>
   </button>
   <button class="tab-item" onclick="switchTab('routine',this)" id="tab-routine">
     <div class="tab-icon">↻</div>
     <div class="tab-label">ルーティン</div>
-  </button>
-  <button class="tab-item" onclick="switchTab('all',this)" id="tab-all">
-    <div class="tab-icon">📋</div>
-    <div class="tab-label">すべて</div>
   </button>
 </div>
 
@@ -318,8 +319,8 @@
   document.getElementById('headerDate').textContent =
     todayDate.toLocaleDateString('ja-JP', { month:'long', day:'numeric', weekday:'long' });
 
-  let currentTab = 'today';
-  let currentFilter = 'all';
+  let currentTab = 'task';
+  let currentFilter = 'today';
 
   // ── データ読み込み ──
   function ls(key, def) { try { const v = localStorage.getItem(key); return v != null ? JSON.parse(v) : def; } catch(e){ return def; } }
@@ -480,12 +481,16 @@
     currentTab = tab;
     document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
     el.classList.add('active');
-    currentFilter = 'all';
-    document.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active'));
-    const first = document.querySelector('.filter-pill');
-    if (first) first.classList.add('active');
-    document.getElementById('addForm').style.display = tab === 'routine' ? 'none' : '';
-    document.getElementById('filterArea').style.display = tab === 'routine' ? 'none' : '';
+    if (tab === 'task') {
+      currentFilter = 'today';
+      document.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active'));
+      document.querySelector('.filter-pill').classList.add('active');
+      document.getElementById('addForm').style.display = '';
+      document.getElementById('filterArea').style.display = '';
+    } else {
+      document.getElementById('addForm').style.display = 'none';
+      document.getElementById('filterArea').style.display = 'none';
+    }
     render();
   }
 
@@ -550,14 +555,13 @@
       return;
     }
 
-    let list = currentTab === 'today'
+    let list = currentFilter === 'today'
       ? tasks.filter(t => isToday(t) || isOverdue(t))
-      : [...tasks];
-
-    if (currentFilter === '高') list = list.filter(t => t.pri === '高');
-    else if (currentFilter === 'overdue') list = list.filter(t => isOverdue(t));
-    else if (['仕事','プライベート','健康','買い物','その他'].includes(currentFilter))
-      list = list.filter(t => t.cat === currentFilter);
+      : currentFilter === 'all'
+      ? [...tasks]
+      : currentFilter === '高' ? tasks.filter(t => t.pri === '高')
+      : currentFilter === 'overdue' ? tasks.filter(t => isOverdue(t))
+      : tasks.filter(t => t.cat === currentFilter);
 
     const ov     = list.filter(t => isOverdue(t));
     const active = list.filter(t => !t.done && !isOverdue(t));
@@ -569,6 +573,43 @@
     if (done.length)   html += `<div class="section-label">完了（${done.length}）</div><div class="task-list">${done.map(taskCard).join('')}</div>`;
     if (!html) html = '<div class="empty">タスクがありません</div>';
     area.innerHTML = html;
+  }
+
+  // ── バックアップ・復元 ──
+  function exportData() {
+    const data = { routines, tasks, nextId, exportedAt: new Date().toISOString() };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `taskflow_backup_${dateStr}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('バックアップを保存しました');
+  }
+
+  function importData(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!data.tasks || !data.routines) throw new Error('形式が正しくありません');
+        if (!confirm(`バックアップを復元しますか？\n現在のデータは上書きされます。\n（エクスポート日時: ${data.exportedAt ? data.exportedAt.slice(0,10) : '不明'}）`)) return;
+        routines = data.routines;
+        tasks = data.tasks;
+        nextId = data.nextId || 1;
+        saveAll();
+        render();
+        showToast('復元しました');
+      } catch(err) {
+        alert('復元に失敗しました: ' + err.message);
+      }
+      event.target.value = '';
+    };
+    reader.readAsText(file);
   }
 
   // ── Toast ──
